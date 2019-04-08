@@ -1,0 +1,792 @@
+
+
+				 FDNODE.DOC
+				 ==========
+
+				Release 1.00
+	    Documentation for code to read FrontDoor's nodelist indices
+		       Colin Turner, fidonet 2:443/13
+
+
+
+Overview
+========
+
+A long outstanding problem for many people has been the lack of adequate
+structures and information for reading the FrontDoor nodelist indices, and
+subsequently extracting information from the various nodelist database files.
+
+This code aims to not only provide those structures, but I hope a simple and
+flexible interface to the index files themselves which protects the end user
+from the difficulties of the various files involved as well as the BTree
+format in which the records are stored.
+
+Both C++ and C source code is available.
+
+
+Contents
+========
+
+	1.   The C++ Class Implementation ............................
+        1.1  Why C++?
+	1.1  Creating the class ......................................
+        1.2  Searches and the FDNFind class ..........................
+	1.3  User name searches ......................................
+	1.4  Node searches ...........................................
+	1.5  Lists of Zones, Nets, Nodes and Points ..................
+	1.6  Getting raw nodelist lines ..............................
+	1.7  Detecting error conditions ..............................
+	1.8  Freezing and Thawing ....................................
+        1.9  I/O Systems .............................................
+        1.10 Technical Issues ........................................
+
+
+1. The C++ Class Implementation
+===============================
+
+No 'C' file implementation exists at the moment, but almost all 'C' compilers
+for the Intel platform are really C++ compilers anyway. If you are a 'C'
+programmer who is not conversant with C++ the following section 1.1 attempt
+
+
+Given the option, I strongly recommend you use the C++ class implementation
+over the C file version. The class is much easier to integrate to existing
+code and is safer to use as it is harder to corrupt inform
+
+]
+
+There are three classes which are used to read from the Nodelist Database.
+These are:
+
+        FrontDoorNode
+
+          This is the principal class, which controls and uses the others.
+
+
+        FDNFile
+
+          This class is used to make the File IO more abstract, in particular
+          it allows the application programmer to choose their favourite IO
+          system, or to implement one of their own.
+
+
+        FDNFind
+
+          This class is used to initiate and continue searches, by using
+          a FrontDoorNode object.
+
+
+1.1 Starting off
+================
+
+There are three essential files in the code archive, these are
+
+        FDNODE.H
+
+          This file contains the prototypes for the class and the various
+          structures used. You will need to "#include" it in your project
+          (in all files using Nodelist calls).
+
+          FDNODE.H should not be altered, and it is advised that you store
+          a single copy for all projects.
+
+
+        FDNUSER.H
+
+          This file, on the other hand, is designed to be modified by the
+          application programmer, and it is advised that a copy be in the
+          working directory of each project (allowing flexibility between
+          projects).
+
+          The various options are commented in the include file itself, and
+          it is automatically included by FDNODE.H, so you should not need
+          to "#include" it yourself.
+
+
+        FDNODE.CPP
+
+          This file contains the source for the Nodelist Reading code itself.
+          You will need to include this file in each project that requires
+          Nodelist Reading code.
+
+          You should not alter the source code. If you feel that you have
+          found a bug or want a change you should contact me, so that the
+          code does not split into many variations.
+
+          It is possible to customize the code very greatly without altering
+          these files, and this is discussed briefly below.
+
+
+1.2 Creating a Nodelist Object
+==============================
+
+There are several constructors for the FrontDoorNode
+
+You may create the class using one of the following constructors:
+
+[
+  Note to C++ Newbies
+
+  A Constructor is a function called automatically when an object (code from
+  a class) is created.
+]
+
+
+        FrontDoorNode(void)
+
+This will create the class with default flags (see below), except that it
+will be in frozen form, and calls to the functions SetNLDir<>, SetSemDir()
+and SetTask() should be performed before a call to Thaw() to make the class
+ready for use.
+
+
+        FrontDoorNode(char * NodelistPath, char * SemaphorePath, int Task)
+
+This creates the class with default flags (see below), and will set the
+nodelist and semaphore directories to the paths specified. The Task variable
+should be the value of the TASK environment variable if defined.
+
+
+        FrontDoorNode(char * NodelistPath, char * SemaphorePath,
+                      int Flags, int Task)
+
+As per the above constructor, except that the variable Flags can be used to
+specify various flags inside the class as detailed below.
+
+
+The flags allow control over how many files will be held open when not in use
+and various other fine control runtime options.
+
+By default all files are held open when the class is not frozen, as this is
+the fastest situation, but it also requires eight file handles. 
+
+Another two flags control the allocation of a small "mini cache" that holds
+the root of each index tree in memory at all times. This requires a little
+memory, but results in significantly greater speed. (Each raw seek will
+always cause a cache hit).
+
+Flags that may be used are 
+
+	File Handle Control
+
+        FDNodeNFDX         Reopen NODELIST.FDX each time
+        FDNodeUFDX         Reopen USERLIST.FDX each time
+        FDNodePFDX         Reopen PHONE.FDX each time
+        FDNodeNode         Reopen NODELIST.??? each time
+        FDNodePvt          Reopen FDNODE.PVT each time
+        FDNodePoint        Reopen FDPOINT.PVT each time
+        FDNodeFDA          Reopen FDNODE.FDA each time
+        FDNodePhone        Reopen PHONE.FDA each time
+
+	Memory Control
+
+        FDNodeNoCacheN     Don't keep NODELIST.FDX root in memory
+        FDNodeNoCacheU     Don't keep USERLIST.FDX root in memory
+        FDNodeNoCacheP     Don't keep PHONE.FDX root in memory
+
+	General
+
+        FDNodeIsFrozen     Initialise Class in "Frozen" form
+        FDNodeNoSem        Prevent creation of busy semaphores
+
+There are some useful combinations
+
+        FDNodeNoPhone      Use for little or no dial translation
+        FDNodeNoUser       Use for little or no user lookup
+        FDNodeNoNode       Use for little or no node lookup
+
+NOTES.
+
+If you wish to declare a global instance of the class, it is unlikely that
+you will know the directory of the nodelist database at compile time. In this
+case you may use the parameterless constructor for default flags, or, start
+the class in the form
+
+        FrontDoorNode NL("", "", FDNodeIsFrozen | OtherFlags, 0)
+
+Then use SetNLDir(), SetSemDir(), SetTask() and Thaw() before use.
+
+
+        void SetTask(int task)
+
+can be used to tell the class what task it is running in. This is used to
+create names of semaphores. If SetTask() is not used, an extension of .BSY
+will be used.
+
+
+        void SetNLDir(char * path)
+
+can be used to set the nodelist path in a nodelist class, provided the class
+is frozen, otherwise the function call will be ignored.
+
+
+        void SetSemDir(char * path)
+
+can likewise be used to set the semaphore path in a frozen nodelist class. If
+this function is not called, and an empty semaphore path has been passed in
+a constructor, then the class will operate in NoSemMode.
+
+  NOTE :
+
+    It is NOT recommended that your program does not use the busy semaphore
+    handling. This is provided for those rare occaisions when a programmer
+    will handle the busy semaphores themselves.
+
+eg.
+	FrontDoorNode NL;       // Global instance
+	..
+	.. // read SETUP.FD
+	NL.SetNLDir(FDNLPath);
+        NL.SetSemDir(FDSemPath);
+        NL.SetTask(Task);
+	NL.Thaw();
+	// the class is now ready for use.
+
+
+It may happen that the class will fail to initialise, you may check for this
+either by examining the return value of Thaw() or by calling IsFrozen().
+
+If the class has not thawed you should check the error condition for a reason
+why.
+
+eg.
+        FrontDoorNode NL("C:\\FD\\NODELIST", "C:\\FD\\SEMAFORE", 0, 0);
+	if(NL.IsFrozen()){
+	  printf("\nNodelist class cannot initialise");
+          printf("\nError number %u\n", NL.GetError());
+	  exit(1);
+	}
+
+
+1.2 Searches and the FDNFind class
+==================================
+
+Most searches are done with the aid of a related class FDNFind. It helps if
+you understand how to get the information out of this class. (Technically
+advanced users may wish to examine 1.10 for details on how to customise
+searches somewhat).
+
+You will normally pass a class of this type into a search function in order
+to begin a search. Most search functions return an integer to tell you if
+you have valid data. This provides you with two ways of conducting a search
+which will produce multiple values. The way of continuing a search is common
+to all multiple entry searches.
+
+(a) Using Return values
+
+The functions return integer values just as _dos_findfirst, _dos_findnext,
+in otherwords, a non zero value represents a completed search, while zero
+indicates more to do. You should move to the next item by calling Find()
+
+eg.
+
+	int done;
+        FDNFind fblock;
+
+	done=NL.GetZones(fblock);
+	while(!done){
+	   ...
+           done=NL.Find(fblock);
+	}
+
+(b) Using the internal finished value
+
+The class holds an internal value which indicates when a search is finished.
+This can be checked by simply examining the integer value of (fblock).
+
+eg.
+
+        FDNFind fblock;
+
+	NL.GetZones(fblock);
+	while(fblock){
+	  ...
+	  ++fblock;
+	}
+
+You will note that the search is advanced by (prefix) incrementing fblock.
+Postfix incrementing is not supported.
+
+Once you have a valid FDNFind entry, the following functions may be used.
+
+	unsigned long GetOffset()
+
+This gives the raw offset found in the FD Indices, not recommeded unless you
+know what you're doing. Zero indicates no match.
+
+	unsigned short GetZone()
+	unsigned short GetNet()
+	unsigned short GetNode() 
+	unsigned short GetPoint()
+
+This is the obvious information about the node in question.
+
+	unsigned short GetRNet() 
+	unsigned short GetRNode() 
+
+This information is not available on userfind searches, and in this case
+both functions will always return zero. This gives the net and node that
+netmail should be hub routed to.
+
+	int GetStatus()
+
+This function returns the status of the node as outlined in NODELIST.H in the
+FrontDoor development toolkit. You may use this to check whether a node is
+is down, or on hold etc.
+
+	int IsFDA() 
+
+A courtesy function for more technically minded users. This tells you if the
+current record is a binary record held in FDNODE.FDA. Otherwise it is held
+in one of the textual form nodelist files.
+
+        char * GetSysop()
+        char * GetLocation()
+        char * GetSysName()
+
+Returns the Sysop name, location, and system name respectively.
+
+
+	unsigned char GetSpeed()
+
+Baud rate as held in the increasingly inaccurate nodelist field, and as
+detailed in NODELIST.H in the FrontDoor development toolkit.
+
+        char * GetNumber()
+
+This is the raw untranslated phone number of the system.
+	
+        char * GetFlags()
+
+If this is a textual item, this returns the nodelist flags as a single string,
+without an initial comma.
+
+	long GetFDAFlags()
+
+In a record held in a FDNODE.FDA style record this gives the capability flags.
+For more information, see NODELIST.FDX in the FrontDoor development toolkit.
+
+        unsigned short GetPhoneData(char * Buffer)
+
+This enables information to be obtained on the cost of the system and the
+translated phone number, from data in FDNODE.CTL which is compiled into
+PHONE.FDX.
+
+A Buffer of sufficient length should be placed into Buffer, which the class
+will fill with the translated number and the function will return the cost of
+the system.
+
+Passing a NULL into the Buffer variable disables translation and just
+obtains the cost.
+
+
+ NOTE: Nodelist Indices compiled by FrontDoor 2.30 (or equivalent) and above
+       add the local country number into the index files so that the class
+       can determine which numbers are local, and which international
+       automatically.
+
+       For previous versions a call to
+
+
+        void SetCountry(unsigned short code)
+
+must be made (in the parent FrontDoorNode) class. The country code should be
+the international telephone code for your country, as defined in FDSetup.
+
+If this is not set translations will simply be NULL, though note, it is always
+possible to extract raw untranslated phone numbers.
+
+A call to
+
+        int GetNLDBRevision()
+
+can be used to determine what revision of index is in use. A value of 1 or
+higher signifies that SetCountry() is not needed.
+
+
+
+  NOTE - Technical note for optimization
+
+  The functions which return strings are actually member functions of the
+  FrontDoorNode class. Upon the first call to such a function the data for
+  all strings will be fetched and parsed and stored internally.
+
+  Therefore there is a small extra overhead for the first string fetch
+  requested for a record (the other data obtained from the indices). Subsequent
+  calls for text require no further reading from the data file, provided no
+  other record has been fetched in the interim.
+
+  The FDNFind functions call the functions in the parent FrontDoorNode class.
+  (If there are several parent classes the correct one is determined
+  automatically).
+
+  If there are two child FDNFind classes from the same FrontDoorNode class
+  you should avoid reading strings from Record1, then Record2, and back to
+  Record1 if possible. These operations will cause the Parent FrontDoorNode to
+  fetch the nodelist data for Record1 twice. (It only holds details for one
+  record internally, no matter how many FDNFind's are attached to it).
+
+
+1.3 User name searches
+======================
+
+User name searches require a FDNFind class to be created. You should search
+for the name with the words reversed, for example, to find Joaquim
+Homrighausen you would search for
+
+homrighausen joaquim
+
+Note that a '_' character can be used to match any trailing collection of
+characters. For example
+
+turner_
+
+will match all turners in the nodelist. The search is case insensitive.
+
+Start the search with the function.
+
+        int Find(FDNFind & fblock, char * Username);
+
+and follow up with one of the two methods mentioned in 1.2.
+
+eg.
+        FDNFind fblock;
+        NL.Find(fblock, "TURNER_");
+	while(fblock){
+	  ...
+	  ++fblock;
+	}
+
+
+1.4 Node searches
+=================
+
+This is a single item search. In fact, the only one of these, simply use
+the function.
+
+        int Find(FDNFind& fblock, unsigned short zone, unsigned short net,
+	unsigned short node, unsigned short point);
+
+eg.
+        FDNFind fblock;
+	int found;
+        found=!NL.Find(fblock, 2, 443, 13, 0);
+	if(found) ...
+
+
+1.5 Lists of Zones, Nets, Nodes and Points
+==========================================
+
+The functions for starting these are
+
+        int GetZones(FDNFind & fblock);
+        int GetZones(FDNFind & fblock, start);
+
+        int GetNets(FDNFind & fblock, unsigned short zone);
+        int GetNets(FDNFind & fblock, unsigned short zone, 
+	unsigned short start);
+
+        int GetNodes(FDNFind & fblock, unsigned short zone,
+	unsigned short net);
+        int GetNodes(FDNFind & fblock, unsigned short zone,
+	unsigned short net, unsigned short start);
+
+        int GetPoints(FDNFind & fblock, unsigned short zone,
+	unsigned short net, unsigned short node);
+        int GetPoints(FDNFind & fblock, unsigned short zone,
+	unsigned short net, unsigned short node, unsigned short start);
+
+As you can see, these come in pairs. The first function contains the bare
+minimum to start a search.
+
+eg.
+
+        FDNFind fblock;
+	NL.GetNodes(fblock, 2, 443); // Search all nodes in net 2:443/*
+	while(fblock){
+	  ...
+	  ++fblock;
+	}
+
+and the other allows you to start the search at a specified zone, net, node
+or point (or the next one if that is missing).
+
+
+1.6 Getting Raw Nodelist Lines
+==============================
+
+If you want to get the raw nodelist line for a particular record, you should
+first check using IsFDA() (A member of FDNFind), that the nodelist line is
+there (otherwise a null string is returned). However, you may use
+                               
+        char * GetNLine(FDNFind & fblock)
+
+to get the raw nodelist line for an entry pointed to in fblock, or, if you
+have the "raw" offset which is a mixture of file and real offset, you may use
+the more low level function
+
+        char * GetNLine(long offset)
+
+
+1.7 Detecting error conditions
+==============================
+
+On certain errors, the class will set an internal error indicator to a
+particular value, but note this will not prevent the class from functioning
+in all but critical situations.
+
+To check for an error condition, use the FrontDoorNode member function
+
+	int GetError()
+
+eg.     printf("Error condition number %u", NL.GetError());
+
+It is possible to clear the error indicator with NL.ClearError();
+
+If you need to trap the errors in your program, you may do this by deriving
+a new class and using the virtual function
+
+	virtual void SignalError(int errorcondition)
+
+You should set the internal error variable to the condition given, and you
+may then deal with the error as you see fit. A list of current error numbers
+may be found at the bottom of FDNODE.H. Not all are serious, or even
+unexpected.
+
+
+1.8 Freezing and Thawing
+========================
+
+These functions were mainly provided for programs that would honour or use
+the FDFREEZE, FMFREEZE or similar semaphores created by the commercial
+version, but they have other uses also.
+
+The basic function is to cause the class to close all open file handles to
+the nodelist indices and raw data files, upon thaw, all appropriate handles
+will be reopened, and the root data cached if required.
+
+	void Freeze()
+
+eg.     NL.Freeze()
+
+forces the class to close any open file handles it has on the nodelist
+database (index and data files), and go into a dormant state. This allows
+recompilation of the index etc. In the frozen state, searches will result
+in zero offsets. It can be advantageous to start the class in a frozen
+state when a global instance is required (see above).
+
+        int Thaw()
+
+eg.     NL.Thaw()
+
+causes the class to attempt to initialise itself by opening all requested
+file handles as per flags, and reading vital global index data. This MUST
+be called in order to use a class that has been frozen.
+
+The return value of Thaw() will be non zero to indicate success. A zero will
+indicate some error and the class is still in a frozen state. GetError() can
+now be used to determine the cause of the problem.
+
+
+It is possible to check whether the class is Frozen at a given time using
+the member function
+
+	int IsFrozen()
+
+eg.     if(NL.IsFrozen) printf("Nodelist class is frozen\n");
+
+
+
+1.9 I/O systems
+===============
+
+Different C++ users prefer different IO systems. The FrontDoorNode class
+supports three different IO systems, which can be controlled by uncommenting
+one of the three lines in FDNODE.H as follows
+
+#define USEIOS
+
+For iostream.h style streams.
+
+#define USESTD
+
+For stdio.h fopen() style IO.
+
+#define USEHAND
+
+For io.h integer file handle IO.
+
+Uncomment EXACTLY one of these or a fatal compile error will result to
+prevent an unstable class being compiled.
+
+
+@ USER IO Still to be detailed @
+
+
+1.10 Technical Issues
+=====================
+
+There are several aspects in which various programmers might like to add or
+tailor features of the nodelist class. In many cases, virtual hooks have
+been provided to allow programmers to do this without altering the code of
+the base class.
+
+Programmers are strongly discouraged from making independent changes to the
+source code itself. This will make tracking faults and keeping the code
+consistent extremely difficult. In addition, when new releases of the source
+code are produced the modifications will have to be made afresh. Every effort
+has been made to prevent a need to alter the code itself.
+
+Here are the aspects most easily changed.
+
+
+Customising searches
+--------------------
+
+In your application, you may only have to deal with certain nodes. You may
+filter undesirable nodes out yourself during searches, but it is possible to
+let the classes do the work of this for you. You may choose not to see nodes
+that are Down or on Hold, for example.
+
+This can be done by means of deriving a class on the base FDNFind, and
+redefining the virtual function
+
+        virtual int Filter()
+
+This function should use the data in the FDNFind class to determine if a node
+should be accepted or not. Doing this it is possible to exclude almost any
+group of nodes. If you need different filters for different searches, you
+should do a switch on searchtype. It has the following values
+
+	0       userfind
+	1       nodefind
+	2       zone list
+	3       net list
+	4       node list
+	5       point list
+
+If it all possible, you should avoid using functions that give textual data
+on a node, as this requires the overhead of loading information from the
+data files as opposed to the index files. You should return a non zero value
+for a good node, and zero for a dud.
+
+The class will then automatically bypass nodes that fail the filter in a 
+transparent fashion (even if the dud is at the start, middle or end of a
+multiple entry search).
+
+Here's a simple function you could use in a derived class.
+
+eg.
+
+        virtual void Filter(){
+          switch(this->searchtype){
+	    case 2 : // Only interested in zone lists
+              if(this->zone % 2) return(1); else return(0);
+	      // Only allow zones that have a remainder when divided by 2
+	      // ie. They are odd
+	    default :
+	      return(1);
+	  }
+	}
+
+Using this derived FDNFind class, all even numbered zones simply wouldn't
+appear on the zone lists, although the process of producing a list is the
+same as ever.
+
+As the Filter is called all throughout the class, you should make it as fast
+as possible.
+
+By deriving several different classes on the original FDNFind it is possible
+to create as many different filters as circumstances require. Simply pass the
+appropriate class to the FrontDoorNode class instead of FDNFind and the
+correct filtering will occur automatically.
+
+
+Cache Systems
+-------------
+
+It may be desirable to cache pages of data from the index files to faster
+media than that the index is stored on. For example, on a local disk if the
+index is stored on a LAN, or memory, if sufficient is available.
+
+Virtual functions have been provided to allow this, they are
+
+        void CommitUFDXCache(UFDXPage & ud, pageno);
+        void CommitNFDXCache(NFDXPage & nd, pageno);
+
+These two functions are called by the base class whenever a page is physically
+fetched from the relevant index file. Your derived class, should determine
+whether it should cache this page or not.
+
+        int CheckUFDXCache(UFDXPage & ud, pageno);
+        int CheckNFDXCache(NFDXPage & nd, pageno);
+
+These two functions are called by the base class before attempting to fetch
+a page from the index files. Your derived class should determine, based on the
+pageno, whether this page is stored in the cache. If so, it should fill ud/nd
+and return a non zero. If no cache data may be found, it should return 0.
+
+  Notes on Cache Systems
+
+  Your cache system is responsible for checking the validity of its own
+  pages. If the nodelist class becomes frozen, and subsequently thaws, any
+  changes made to the index in the interim period may invalidate some or all
+  of your cache pages.
+
+  Possible solutions include
+
+  1) Flushing all cache data on a Freeze, simple.
+  2) Store time values for each page cached. Upon a CheckXCache request,
+     ensure that the time on the page is greater than the timestamp held
+     in the base class (time since last init/thaw). If not, flush the page.
+
+  Neither of these solutions are particularly good for long duration caches
+  stored on local hard discs. In this case, again, keep the time at which
+  each page was cached. Upon a request for an NFDX page, check the stamp
+  against the last update time for NODELIST.FDX. If the latter has been
+  altered since the cache time, the chances are the page is useless.
+
+  Note also that the mini caches (root pages) will not clash with the main
+  cache. If enabled, the mini caches intercept all calls for the root pages
+  so that the main cache routines are not called.
+
+
+  Suggested Format
+
+  The following format, on disc or memory, might represent a suitable cache
+  structure
+
+  Header
+  long No;          // Number of pages
+  long LookUp[No];  // Array of stored pages (contains PageNo, 0=empty)
+
+  No of the following blocks
+
+  time_t CacheTime; // Time page was cached
+  int    Hits;      // Number of cache hits on this page
+  { actual UFDX/NFDX page }
+
+  Your cache system could purge those pages with the fewest Hits / TimePeriod
+  in order to accomodate new pages for example.
+
+
+Error Handling
+--------------
+
+As previously noted, a derived class can define the body of the SignalError()
+virtual function to trap error conditions arising inside the class, and
+display any high level messages etc.
+
+Obviously the derived class may also call SignalError itself to trigger
+error messages.
+
+Author's of derived classes are asked to use negative internal error numbers
+so that positive error numbers may be reserved for future versions of the base
+class.
+
+
+2. The C file Implementation
+============================
+
+
+
